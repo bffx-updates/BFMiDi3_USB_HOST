@@ -695,7 +695,15 @@
     const serialLib = navigator.serial ? navigator.serial : (navigator.usb ? window.serial : null);
 
     // Configurações fixas
+    // As identidades do USB HOST vêm PRIMEIRO. O 303A solto no fim é
+    // compatibilidade (placa antiga/estranha) — e é ele que também deixa o
+    // PEDAL aparecer na lista, então a ordem importa pra quem escolhe.
+    const HOST_UPDATE_PID = 0x4002;   // CDC do firmware de modo update
+    const HOST_ROM_PIDS = [0x1001, 0x0009];  // ROM: Serial/JTAG e USB-OTG
     const defaultFilters = [
+      { usbVendorId: 0x303a, usbProductId: HOST_UPDATE_PID },
+      { usbVendorId: 0x303a, usbProductId: 0x1001 },
+      { usbVendorId: 0x303a, usbProductId: 0x0009 },
       { usbVendorId: 0x303a, usbProductId: 0x80c2 },
       { usbVendorId: 0x303a, usbProductId: 0x0002 },
       { usbVendorId: 0x303a },
@@ -918,10 +926,100 @@
 
 
 
+    function portPid(port) {
+      try { return (port.getInfo() || {}).usbProductId; } catch (e) { return undefined; }
+    }
+
+    // A porta sumiu da lista? É o único sinal observável de que o USB
+    // re-enumerou (o chip reiniciou noutra identidade).
+    async function portWentAway(port, timeoutMs) {
+      const deadline = Date.now() + (timeoutMs || 4000);
+      while (Date.now() < deadline) {
+        if (port.connected === false) return true;
+        try {
+          const ports = await serialLib.getPorts();
+          if (ports.indexOf(port) === -1) return true;
+        } catch (e) { /* sem API: cai no timeout */ }
+        await sleep(200);
+      }
+      return false;
+    }
+
+    // Procura, entre as portas JÁ autorizadas, o bootloader ROM do host.
+    async function findRomPort(timeoutMs) {
+      const deadline = Date.now() + (timeoutMs || 6000);
+      while (Date.now() < deadline) {
+        let ports = [];
+        try { ports = await serialLib.getPorts(); } catch (e) { /* sem API */ }
+        const cands = ports.filter(function (p) {
+          const info = (function () { try { return p.getInfo() || {}; } catch (e) { return {}; } })();
+          return info.usbVendorId === 0x303a && HOST_ROM_PIDS.indexOf(info.usbProductId) !== -1;
+        });
+        const match = cands.filter(function (p) { return p.connected === true; })[0] ||
+                      cands.filter(function (p) { return p.connected !== false; })[0];
+        if (match) return match;
+        await sleep(250);
+      }
+      return null;
+    }
+
+    // "BOOT" é o comando que o firmware de MODO UPDATE entende para saltar ao
+    // bootloader ROM (update_mode_handle_command, em main.cpp). É o mesmo que
+    // o "flash lote usb host.bat" manda. DTR=1/RTS=0 antes de escrever, igual
+    // ao .bat: essa combinação sozinha não fecha a sequência de reset do
+    // esptool que aquele mesmo firmware vigia, então não dispara as duas coisas.
+    async function sendBootCommand(port) {
+      try { await port.open({ baudRate: 115200 }); } catch (e) { return false; }
+      try {
+        try { await port.setSignals({ dataTerminalReady: true, requestToSend: false }); }
+        catch (e) { /* driver sem sinais: a linha de texto basta */ }
+        await sleep(200);
+        const writer = port.writable.getWriter();
+        try { await writer.write(new TextEncoder().encode("BOOT" + String.fromCharCode(13, 10))); }
+        finally { writer.releaseLock(); }
+        await sleep(400);
+      } catch (e) { /* porta caiu no meio = o salto já aconteceu */ }
+      try { await port.close(); } catch (e) { /* já sumiu */ }
+      return true;
+    }
+
     async function handleConnect() {
       try {
         const selectedDevice = await acquirePort();
         if (!selectedDevice) return; // Cancelled
+        device = selectedDevice;
+
+        // MODO UPDATE (PID 4002) NÃO É O BOOTLOADER. O editor da BFMiDi (e o
+        // botão UPLOAD MODE antigo) põem o host neste modo, que é um firmware
+        // mínimo com CDC — o esptool não fala com ele. Falta o pulo pro ROM,
+        // e quem manda é a linha "BOOT". Sem este trecho, quem chegava aqui
+        // pelo editor via a porta do host na lista e mesmo assim levava
+        // "Falha ao conectar", porque o esptool sincronizava com o firmware
+        // errado.
+        if (portPid(device) === HOST_UPDATE_PID) {
+          setUIState('connecting', "USB Host em modo update — levando ao bootloader...");
+          log("Porta em MODO UPDATE (303A:4002). Mandando comando BOOT...");
+          await sendBootCommand(device);
+          const went = await portWentAway(device, 4000);
+          if (went) {
+            log("Porta sumiu (reiniciou no ROM). Procurando o bootloader...");
+            const rom = await findRomPort(6000);
+            if (!rom) {
+              // A identidade nova ainda não foi autorizada por este site, e
+              // requestPort() exige um clique NOVO — não dá pra emendar aqui.
+              lastPortInfo = null;
+              setUIState('error', "O USB Host foi para o bootloader e virou outro dispositivo USB. Clique de novo e escolha a porta que apareceu.");
+              showToast("Clique de novo e escolha a porta nova");
+              return;
+            }
+            device = rom;
+            log("Bootloader ROM encontrado.");
+          } else {
+            // USB preservado através do reset: a MESMA porta já é o ROM.
+            log("Porta continuou na lista — o USB foi preservado no reset.");
+          }
+          lastPortInfo = null;   // não prender o próximo diálogo ao PID 4002
+        }
 
         setUIState('connecting', "Conectando à porta HOST...");
 
