@@ -549,7 +549,33 @@
 
     #log.visible {
       display: block;
+      height: 260px;
     }
+
+    #log .lg-warn { color: #fbbf24; }
+    #log .lg-err { color: #fca5a5; }
+    #log .lg-sum { color: #e5e7eb; }
+
+    .log-actions {
+      display: none;
+      gap: 10px;
+      justify-content: center;
+      margin-top: 8px;
+    }
+
+    .log-actions.visible { display: flex; }
+
+    .log-actions button {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .log-actions button:hover { color: #fff; }
 
     #fileList,
     #baudSelect {
@@ -661,6 +687,10 @@
 
       <button class="debug-toggle" id="debugToggle">Mostrar logs de debug</button>
       <div id="log"></div>
+      <div class="log-actions" id="logActions">
+        <button type="button" id="copyLogBtn">Copiar log</button>
+        <button type="button" id="saveLogBtn">Baixar log (.txt)</button>
+      </div>
 
       <div class="footer">BFFX &middot; grave com a porta <b>HOST</b> do BFMidi3 ligada ao PC (Chrome ou Edge)</div>
     </div>
@@ -732,9 +762,16 @@
       }
     });
 
+    const logActions = document.getElementById("logActions");
+
+    function showLog(visible) {
+      logEl.classList.toggle('visible', visible);
+      logActions.classList.toggle('visible', visible);
+      debugToggle.textContent = visible ? "Ocultar Logs" : "Mostrar Logs de Debug";
+    }
+
     debugToggle.addEventListener('click', () => {
-      logEl.classList.toggle('visible');
-      debugToggle.textContent = logEl.classList.contains('visible') ? "Ocultar Logs" : "Mostrar Logs de Debug";
+      showLog(!logEl.classList.contains('visible'));
     });
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -852,8 +889,7 @@
           actionBtn.textContent = "Tentar Novamente";
           statusRing.classList.add("error");
           progressContainer.classList.remove("visible");
-          document.getElementById("log").classList.add("visible"); // Auto-show logs on error
-          document.getElementById("debugToggle").textContent = "Ocultar Logs";
+          showLog(true); // Auto-show logs on error
           break;
       }
     }
@@ -872,47 +908,297 @@
         handleFlash();
       }
     });
-    function log(msg) {
-      console.log(msg);
+    // ─── LOG DE DIAGNÓSTICO ───────────────────────────────────────────────
+    // O cliente manda este log pro suporte, então ele tem que responder SEM
+    // acesso à máquina: qual porta (VID/PID), se ela abriu, quantos bytes
+    // foram e voltaram, o que o chip disse e em que etapa parou. Cada linha
+    // leva o tempo desde o carregamento da página (+s.mmm) e a hora local.
+    const PAGE_VERSION = "2026-10-04 diag";
+    const T0 = performance.now();
+    const logLines = [];
+    const stats = { tx: 0, rx: 0, rxHead: [], lastRxAt: 0 };
+
+    function stamp() {
+      const d = new Date();
+      const hms = d.toLocaleTimeString('pt-BR', { hour12: false });
+      const ms = String(d.getMilliseconds()).padStart(3, '0');
+      const rel = ((performance.now() - T0) / 1000).toFixed(3);
+      return `${hms}.${ms} +${rel}s`;
+    }
+
+    function log(msg, level) {
+      const text = String(msg);
+      const full = `[${stamp()}] ${level === 'err' ? 'ERRO ' : level === 'warn' ? 'AVISO ' : ''}${text}`;
+      (level === 'err' ? console.error : console.log)(full);
+      logLines.push(full);
       const line = document.createElement('div');
-      line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      line.textContent = full;
+      if (level) line.className = 'lg-' + level;
       logEl.appendChild(line);
       logEl.scrollTop = logEl.scrollHeight;
     }
 
+    function logText() {
+      return [
+        "BFMiDi3 USB HOST - log do atualizador",
+        "Página: " + PAGE_VERSION + " · " + location.href,
+        "Gerado: " + new Date().toString(),
+        "",
+      ].concat(logLines).join("\n");
+    }
+
+    document.getElementById("copyLogBtn").addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(logText());
+        showToast("Log copiado. Cole na conversa com o suporte.");
+      } catch (e) {
+        showToast("Não deu pra copiar — use Baixar log.");
+      }
+    });
+
+    document.getElementById("saveLogBtn").addEventListener('click', () => {
+      const blob = new Blob([logText()], { type: 'text/plain' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'bfmidi-usbhost-log-' + new Date().toISOString().replace(/[:.]/g, '-') + '.txt';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    });
+
+    // Erro que escapa de qualquer try (promessa sem catch dentro do esptool)
+    // também vai pro log — sem isso a página só "parava".
+    window.addEventListener('error', (e) => log("Erro de script: " + (e.message || e) +
+      (e.filename ? " @ " + e.filename + ":" + e.lineno : ""), 'err'));
+    window.addEventListener('unhandledrejection', (e) => {
+      const r = e.reason;
+      log("Promessa rejeitada sem tratamento: " + (r && (r.stack || r.message) || r), 'err');
+    });
+
+    function hex(n, w) { return n == null ? '?' : '0x' + Number(n).toString(16).toUpperCase().padStart(w || 4, '0'); }
+
+    function describePid(pid) {
+      switch (pid) {
+        case 0x1001: return "USB JTAG/serial debug unit — bootloader ROM (ou chip em loop com firmware danificado)";
+        case 0x0009: return "bootloader ROM pela USB-OTG";
+        case 0x4002: return "MODO UPDATE do firmware antigo do host (precisa do comando BOOT)";
+        case 0x80C2: return "ATENÇÃO: esta é a CONTROLADORA (porta DEVICE), não o USB HOST";
+        case 0x0002: return "ATENÇÃO: controladora S2 (porta DEVICE), não o USB HOST";
+        default: return "dispositivo desconhecido";
+      }
+    }
+
+    function describePort(port) {
+      let info = {};
+      try { info = port.getInfo() || {}; } catch (e) { /* sem info */ }
+      return `VID ${hex(info.usbVendorId)} PID ${hex(info.usbProductId)} (${describePid(info.usbProductId)})`;
+    }
+
+    // Texto legível dos primeiros bytes que o chip mandou: é ali que aparece
+    // "waiting for download", "invalid header", um Guru Meditation, etc.
+    function rxPreview() {
+      const b = stats.rxHead;
+      if (!b.length) return "(nada)";
+      const txt = b.map((c) => (c >= 32 && c < 127) || c === 10 ? String.fromCharCode(c) : '·').join('').replace(/\n+/g, ' | ');
+      const hx = b.slice(0, 48).map((c) => c.toString(16).padStart(2, '0')).join(' ');
+      return `texto: "${txt.slice(0, 200)}" · hex: ${hx}${b.length > 48 ? ' …' : ''}`;
+    }
+
+    async function logEnvironment() {
+      log("Página: " + PAGE_VERSION);
+      log("Navegador: " + navigator.userAgent);
+      const uad = navigator.userAgentData;
+      if (uad && uad.getHighEntropyValues) {
+        try {
+          const v = await uad.getHighEntropyValues(['platform', 'platformVersion', 'architecture', 'fullVersionList']);
+          const br = (v.fullVersionList || []).map((x) => x.brand + ' ' + x.version).join(', ');
+          log(`Sistema: ${v.platform} ${v.platformVersion} ${v.architecture || ''} · ${br}`);
+        } catch (e) { /* opcional */ }
+      }
+      log("Web Serial: " + (navigator.serial ? "nativo" : (window.serial ? "polyfill WebUSB" : "INDISPONÍVEL")) +
+          " · contexto seguro: " + window.isSecureContext);
+      try {
+        const ports = await serialLib.getPorts();
+        log(`Portas já autorizadas neste site: ${ports.length}` +
+            ports.map((p) => "\n    - " + describePort(p) + (p.connected === false ? " [desconectada]" : "")).join(''));
+      } catch (e) { log("getPorts falhou: " + e.message, 'warn'); }
+    }
+
     // --- Core Logic (Adapted) ---
 
+    // O esptool-js escreve "Connecting..." e depois um "." por tentativa sem
+    // quebra de linha; aqui cada write vira uma linha do log.
     const espLoaderTerminal = {
       clean() { },
       writeLine(data) { log(data); },
-      write(data) { log(data); },
+      write(data) { if (String(data).trim()) log(data); },
     };
+
+    // Com debugLogging o esptool-js conta cada tentativa de SYNC e o motivo da
+    // falha — o que interessa no diagnóstico. Fora disso ele também loga cada
+    // bloco gravado (centenas de linhas): esses são descartados aqui.
+    // Cada rodada do esptool faz 5 SYNCs; as mesmas falhas em sequência viram
+    // uma linha "(mais N iguais)".
+    const ESPTOOL_DEBUG_NOISE = /^Debug: (check_command|flash_defl_block|Write loop|mem_begin|Sync$|Sync err|Sync connect attempt)/;
+    let espLast = '', espRepeat = 0;
+    function espLog(data) {
+      const s = String(data);
+      if (!s.trim() || ESPTOOL_DEBUG_NOISE.test(s)) return;
+      if (s === espLast) { espRepeat++; return; }
+      if (espRepeat) log(`  (mais ${espRepeat} iguais)`);
+      espLast = s; espRepeat = 0;
+      log(s);
+    }
+    const espLoaderDebugTerminal = { clean() { }, writeLine: espLog, write: espLog };
+
+    // Batimento enquanto o esptool tenta sincronizar: sem ele a tela fica
+    // parada em "Conectando" e não dá pra saber se algo chega do chip.
+    function startHeartbeat(label) {
+      const t0 = performance.now();
+      const id = setInterval(() => {
+        const secs = Math.round((performance.now() - t0) / 1000);
+        const since = stats.lastRxAt ? Math.round((performance.now() - stats.lastRxAt) / 1000) + ' s atrás' : 'nunca';
+        log(`${label}: ${secs} s · enviados ${stats.tx} B · recebidos ${stats.rx} B (último byte: ${since})`);
+        statusText.textContent = `${label}... ${secs} s (recebidos ${stats.rx} B)`;
+      }, 5000);
+      return () => clearInterval(id);
+    }
+
+    function resetStats() {
+      stats.tx = 0; stats.rx = 0; stats.rxHead = []; stats.lastRxAt = 0;
+    }
+
+    // Resumo em linguagem de suporte do que aconteceu numa tentativa falha.
+    function logConnectDiagnosis(err) {
+      if (espRepeat) { log(`  (mais ${espRepeat} iguais)`); espRepeat = 0; espLast = ''; }
+      const msg = (err && err.message) || String(err);
+      log(`RESUMO: enviados ${stats.tx} B, recebidos ${stats.rx} B. Erro: ${msg}`, 'sum');
+      if (stats.rx) log("Primeiros bytes do chip — " + rxPreview(), 'sum');
+      let hint;
+      if (/open|abrir|NetworkError|InvalidStateError|Access|acesso|negado/i.test(msg) && !stats.tx) {
+        hint = "A porta não abriu: feche outras abas/programas que usem a porta (editor, Arduino IDE, monitor serial), replugue o cabo e tente sem hub USB.";
+      } else if (!stats.rx) {
+        hint = "O chip não mandou NENHUM byte. Ou ele não está no modo download (ligue segurando o BOOT do USB HOST), ou o cabo/porta não passa dados (teste outro cabo, de preferência USB-A no PC, e outra porta do PC).";
+      } else if (/waiting for download/i.test(rxPreview())) {
+        hint = "O chip está no modo download e responde, mas a sincronização falhou — mande este log ao suporte.";
+      } else if (/boot:0x/i.test(rxPreview())) {
+        hint = "O chip reiniciou no modo normal (não no download). Ligue segurando o BOOT do USB HOST.";
+      } else {
+        hint = "O chip respondeu mas a sincronização falhou — mande este log ao suporte.";
+      }
+      log("DICA: " + hint, 'sum');
+    }
 
     async function acquirePort() {
       if (!serialLib) throw new Error("Navegador incompatível. Use Chrome ou Edge.");
 
-      log("User Agent: " + navigator.userAgent);
-      log("Solicitando porta serial...");
-
+      // requestPort() precisa ser o PRIMEIRO await do clique (ativação do
+      // usuário); o resto do ambiente é logado depois.
       const filters = lastPortInfo ? [lastPortInfo] : defaultFilters;
+      let picked;
       try {
-        device = await serialLib.requestPort({ filters });
-        const info = device.getInfo();
-        lastPortInfo = { usbVendorId: info.usbVendorId, usbProductId: info.usbProductId };
-        return device;
+        picked = await serialLib.requestPort({ filters });
       } catch (err) {
-        if (err.name === "NotFoundError") return null; // User cancelled
+        await logEnvironment();
+        if (err.name === "NotFoundError") { log("Nenhuma porta escolhida (diálogo fechado)."); return null; }
+        log(`requestPort falhou: ${err.name}: ${err.message}`, 'err');
         throw err;
       }
+      log("──────── nova tentativa ────────");
+      await logEnvironment();
+      device = picked;
+      const info = device.getInfo();
+      lastPortInfo = { usbVendorId: info.usbVendorId, usbProductId: info.usbProductId };
+      log("Porta escolhida: " + describePort(device));
+      if (info.usbProductId === 0x80C2 || info.usbProductId === 0x0002) {
+        log("Essa porta é a da controladora. O cabo tem que estar na porta HOST do pedal.", 'warn');
+      }
+      return device;
     }
 
     function wrapSignals(t) {
-      const wrap = (fn) => async (val) => {
+      // Os sinais de uma sequência de reset saem numa linha só
+      // ("sinais: R0 D0 D1 R1 ..."), juntados até 300 ms de silêncio.
+      let sigBuf = [], sigTimer = null;
+      const flushSig = () => { if (sigBuf.length) log("sinais: " + sigBuf.join(' ')); sigBuf = []; sigTimer = null; };
+      const wrap = (name, fn) => async (val) => {
+        sigBuf.push(name[0] + (val ? 1 : 0));
+        clearTimeout(sigTimer); sigTimer = setTimeout(flushSig, 300);
         try { return await fn.call(t, val); }
-        catch (err) { log("Signal error: " + err.message); }
+        catch (err) { flushSig(); log(`Erro no sinal ${name}: ${err.message}`, 'warn'); }
       };
-      if (t?.setDTR) t.setDTR = wrap(t.setDTR);
-      if (t?.setRTS) t.setRTS = wrap(t.setRTS);
+      if (t?.setDTR) t.setDTR = wrap('DTR', t.setDTR);
+      if (t?.setRTS) t.setRTS = wrap('RTS', t.setRTS);
+      instrumentTransport(t);
+      return fixReadLoop(t);
+    }
+
+    // Conta bytes nos dois sentidos e guarda o começo do que o chip mandou.
+    // "0 bytes recebidos" separa chip mudo (não está no bootloader / cabo /
+    // porta errada) de chip que fala mas não sincroniza.
+    function instrumentTransport(t) {
+      if (!t || t._bfInstr) return;
+      t._bfInstr = true;
+      const origWrite = t.write;
+      if (origWrite) t.write = async function (data) {
+        stats.tx += (data && data.length) || 0;
+        return origWrite.call(this, data);
+      };
+      const origConnect = t.connect;
+      if (origConnect) t.connect = async function (baud, opts) {
+        log(`Abrindo a porta a ${baud} baud...`);
+        const t0 = performance.now();
+        try {
+          const r = await origConnect.call(this, baud, opts);
+          log(`Porta aberta em ${Math.round(performance.now() - t0)} ms.`);
+          return r;
+        } catch (err) {
+          log(`A porta NÃO abriu (${err.name}: ${err.message}). Outro programa ou aba ` +
+              `pode estar usando a porta, ou o Windows não liberou o driver.`, 'err');
+          throw err;
+        }
+      };
+    }
+
+    // LEITURA SEM PERDA — porte do fixReadLoop do editor (webApp/esp_flash.js).
+    // O readLoop do esptool-js faz Promise.race([reader.read(), timeout]) e,
+    // quando o tempo esgota, ABANDONA o reader.read(), que continua pendente
+    // e engole o próximo pedaço que chegar. Com no_reset o chip no ROM não
+    // diz nada, então a espera inicial de 3 s SEMPRE expira e deixa uma
+    // leitura órfã — que come a resposta do SYNC. O esptool repete o SYNC,
+    // expira de novo, abandona outra... e a página fica em "Conectando" por
+    // minutos. Aqui a leitura pendente é guardada e reaproveitada.
+    function fixReadLoop(t) {
+      if (!t || typeof t.readLoop !== 'function' || t._bfReadLoopFixed) return t;
+      t._bfReadLoopFixed = true;
+      t.readLoop = async function* readLoop(timeout) {
+        if (!this.reader) return;
+        try {
+          for (;;) {
+            if (!this._bfRead || this._bfReadOf !== this.reader) {
+              this._bfRead = this.reader.read();
+              this._bfReadOf = this.reader;
+            }
+            let timer = null;
+            const expired = new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error('Read timeout exceeded')), timeout);
+            });
+            let r;
+            try { r = await Promise.race([this._bfRead, expired]); } finally { clearTimeout(timer); }
+            this._bfRead = null;
+            if (r === null) break;
+            const { value, done } = r;
+            if (done || !value) break;
+            stats.rx += value.length;
+            stats.lastRxAt = performance.now();
+            if (stats.rxHead.length < 256) {
+              for (let i = 0; i < value.length && stats.rxHead.length < 256; i++) stats.rxHead.push(value[i]);
+            }
+            yield value;
+          }
+        } catch (e) { /* tempo esgotado: a leitura pendente fica pra próxima volta */ }
+        finally { this.buffer = new Uint8Array(0); }
+      };
       return t;
     }
 
@@ -1027,10 +1313,23 @@
         log("Aguardando estabilização da porta...");
         await sleep(500);
 
-        // Tenta conectar com retry em caso de "invalid response"
+        // PORTA USB-JTAG (303A:1001) NÃO PROVA QUE O CHIP ESTÁ NO ROM. Ela é
+        // hardware do S3 e enumera também com o firmware pela metade (o chip
+        // reinicia em loop). Com 'no_reset' ninguém leva o chip ao bootloader
+        // e a sincronização nunca responde — era o caso do host "que não dá
+        // boot e só mostra a porta JTAG". 'default_reset' nessa porta é o
+        // UsbJtagSerialReset do esptool-js: o reset do próprio USB-JTAG, que
+        // põe o chip no download sem ajuda do firmware (inofensivo se ele já
+        // estiver lá). Mesma regra do hostConnectMode do editor.
+        const isJtagPort = portPid(device) === 0x1001;
+        const connectMode = isJtagPort ? 'default_reset' : 'no_reset';
+        if (isJtagPort) log("Porta USB-JTAG: usando o reset do USB-JTAG para entrar no bootloader.");
+
+        // Tenta conectar com retry em caso de "invalid response" (na porta
+        // USB-JTAG, em qualquer erro: um chip em loop pode perder a 1ª janela)
         let connected = false;
         let lastError = null;
-        const maxRetries = 3;
+        const maxRetries = isJtagPort ? 4 : 3;
 
         for (let attempt = 1; attempt <= maxRetries && !connected; attempt++) {
           try {
@@ -1048,19 +1347,31 @@
             esploader = new ESPLoader({
               transport,
               baudrate: 115200,
-              terminal: espLoaderTerminal,
+              terminal: espLoaderDebugTerminal,
               romBaudrate: 115200,
+              debugLogging: true,
             });
 
-            await esploader.main('no_reset');
+            resetStats();
+            log(`Modo de conexão: ${connectMode} · ${describePort(device)}`);
+            const stopBeat = startHeartbeat("Sincronizando com o chip");
+            const tConn = performance.now();
+            try {
+              await esploader.main(connectMode);
+            } finally {
+              stopBeat();
+            }
             connected = true;
-            log("Conexão estabelecida com sucesso!");
+            log(`Conexão estabelecida em ${((performance.now() - tConn) / 1000).toFixed(1)} s ` +
+                `(enviados ${stats.tx} B, recebidos ${stats.rx} B).`);
+            await logChipDetails();
 
           } catch (err) {
             lastError = err;
-            log(`Tentativa ${attempt} falhou: ${err.message}`);
+            log(`Tentativa ${attempt} falhou: ${err.message}`, 'err');
+            logConnectDiagnosis(err);
 
-            if (err.message.includes("invalid response") && attempt < maxRetries) {
+            if ((isJtagPort || err.message.includes("invalid response")) && attempt < maxRetries) {
               log("Aguardando antes de nova tentativa...");
               await closeTransportSafe(transport);
               transport = null;
@@ -1088,11 +1399,28 @@
         }
 
       } catch (err) {
-        log("Erro: " + err.message);
-        log(err.stack);
+        log("Erro: " + err.message, 'err');
+        log(err.stack || "");
+        log("Para o suporte: use COPIAR LOG ou BAIXAR LOG abaixo.", 'sum');
         setUIState('error', "Erro na porta HOST: " + err.message);
         showToast(err.message);
         await disconnect(true);
+      }
+    }
+
+    // Dados do chip conectado: confirmam que é o USB HOST (ESP32-S3 com 4 MB)
+    // e não a controladora (16 MB) num ROM de mesmo VID/PID.
+    async function logChipDetails() {
+      try {
+        const id = await esploader.readFlashId();
+        const mfg = id & 0xff;
+        const sizeCode = (id >> 16) & 0xff;
+        const sizeMb = sizeCode >= 0x14 && sizeCode <= 0x1A ? Math.pow(2, sizeCode - 0x14) : null;
+        log(`Flash: fabricante ${hex(mfg, 2)}, id ${hex(id, 6)}` + (sizeMb ? `, ${sizeMb} MB` : ', tamanho não reconhecido'));
+        if (sizeMb === 16) log("Memória de 16 MB: isto parece a CONTROLADORA, não o USB HOST (que tem 4 MB).", 'warn');
+        else if (sizeMb && sizeMb !== 4) log(`Memória de ${sizeMb} MB — o USB HOST tem 4 MB.`, 'warn');
+      } catch (e) {
+        log("Não deu pra ler o ID da flash: " + e.message, 'warn');
       }
     }
 
@@ -1120,6 +1448,10 @@
       if (!esploader) return;
 
       setUIState('flashing', "Preparando arquivos...");
+
+      // Fora do try: o catch usa lastPct pra dizer se a escrita chegou a começar.
+      let tFlash = performance.now();
+      const lastPct = {};
 
       try {
         const shouldEraseAll = !!eraseAllToggle?.checked;
@@ -1164,10 +1496,15 @@
           const data = await fetchBinaryString(img.path);
           fileArray.push({ data, address: img.address });
           totalSize += data.length;
+          let md5 = '';
+          try { md5 = CryptoJS.MD5(CryptoJS.enc.Latin1.parse(data)).toString(); } catch (e) { /* opcional */ }
+          log(`  ${img.path}: ${data.length} B em ${hex(img.address, 5)}` + (md5 ? ` · MD5 ${md5}` : ''));
         }
         log(`Total: ${fileArray.length} arquivos, ${totalSize} bytes`);
 
         setUIState('flashing', "Gravando firmware...");
+        resetStats();
+        tFlash = performance.now();
 
         // Flash - usa eraseAll na writeFlash apenas se não tiver o método eraseFlash
         // ou se eraseFlash não foi executado
@@ -1182,12 +1519,21 @@
             // Calculate global progress roughly
             const percent = Math.floor((written / total) * 100);
             progressBar.style.width = percent + "%";
-            statusText.textContent = `Gravando... ${percent}%`;
+            statusText.textContent = `Gravando ${images[idx]?.path || ''}... ${percent}%`;
+            // No log, um marco a cada 25% por arquivo: se a gravação parar,
+            // o log diz em qual arquivo e em que ponto.
+            const mark = Math.floor(percent / 25) * 25;
+            if (lastPct[idx] !== mark) {
+              lastPct[idx] = mark;
+              log(`Gravando ${images[idx]?.path || ('arquivo ' + idx)}: ${mark}% (${written}/${total} B) · ` +
+                  `${((performance.now() - tFlash) / 1000).toFixed(1)} s`);
+            }
           },
           calculateMD5Hash: (image) => CryptoJS.MD5(CryptoJS.enc.Latin1.parse(image)),
         });
 
-        log("Gravação concluída, finalizando...");
+        log(`Gravação concluída em ${((performance.now() - tFlash) / 1000).toFixed(1)} s ` +
+            `(enviados ${stats.tx} B, recebidos ${stats.rx} B). Finalizando...`);
 
         try {
           await esploader.after();
@@ -1218,8 +1564,15 @@
         }, 5000);
 
       } catch (err) {
-        log("ERRO FATAL: " + err.message);
+        log("ERRO FATAL: " + err.message, 'err');
         log(err.stack || "");
+        const doneFiles = Object.keys(lastPct).map(Number);
+        if (doneFiles.length) {
+          log("PAROU NO MEIO DA GRAVAÇÃO — o firmware do USB HOST pode estar incompleto. " +
+              "NÃO desligue o pedal: clique em Tentar Novamente. Progresso por arquivo: " +
+              doneFiles.map((i) => `${images[i]?.path} ${lastPct[i]}%`).join(', '), 'sum');
+        }
+        log("Para o suporte: use COPIAR LOG ou BAIXAR LOG abaixo.", 'sum');
         setUIState('error', "Falha na gravação do firmware");
         showToast(err.message);
         await disconnect(true);

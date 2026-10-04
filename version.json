@@ -5,7 +5,7 @@
       "path": "bootloader.bin",
       "address": 0,
       "size": 13616,
-      "sha256": "06d699a5d303bde1474609938a1960d3f26faaf505ab999126749a197762b4f1"
+      "sha256": "9af2a3ee68b8d61aee98b7b480ac89c97931a64a5e62aa521878c8f51370685f"
     },
     {
       "path": "partition-table.bin",
@@ -16,8 +16,8 @@
     {
       "path": "app.bin",
       "address": 65536,
-      "size": 875472,
-      "sha256": "1c60ba2e46ec553da34ae095a65e786e3524becdfe41b7a4385112ede88303e8"
+      "size": 875712,
+      "sha256": "defba8616f33eaf04018ab8b78020fce2c00254c58076035b1d59be24e94edbc"
     }
   ]
 }
