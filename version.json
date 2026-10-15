@@ -16,8 +16,8 @@
     {
       "path": "app.bin",
       "address": 65536,
-      "size": 907792,
-      "sha256": "582a80b23ce0dd8807e3b3a3687cb354fed8c89389e024b3f0cd59f6df87f6a5"
+      "size": 909200,
+      "sha256": "7c27a43c0049436fccd9edbf66c444881ef4860f49a785f9e9943ce0c2606bc4"
     }
   ]
 }
