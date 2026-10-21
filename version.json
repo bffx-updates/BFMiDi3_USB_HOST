@@ -1,5 +1,5 @@
 {
-  "version": "3.3",
+  "version": "3.4",
   "files": [
     {
       "path": "bootloader.bin",
@@ -17,7 +17,7 @@
       "path": "app.bin",
       "address": 65536,
       "size": 913584,
-      "sha256": "d7eda49be0ea1f850e410b5ce914895bc72099db3cb3c351d66b2d09cb0cc8c4"
+      "sha256": "18ac56b1d8cb37a02a9c5ffaed6461309c1f9110155d44a638d0ef309a37b34e"
     }
   ]
 }
