@@ -1,11 +1,11 @@
 {
-  "version": "3.5",
+  "version": "3.6",
   "files": [
     {
       "path": "bootloader.bin",
       "address": 0,
       "size": 13616,
-      "sha256": "7625105d2146612b1c79863888f7242bebaab1efd076cbec78be61f61afe9822"
+      "sha256": "f09e5abb3180ea42294fe7106f3d0fefdd62822d63108febc4a6564581d91a2c"
     },
     {
       "path": "partition-table.bin",
@@ -16,8 +16,8 @@
     {
       "path": "app.bin",
       "address": 65536,
-      "size": 913936,
-      "sha256": "7823480eead3d464e28bdff1ea9efdb76a7179f74991301879ead61dc7722f53"
+      "size": 914272,
+      "sha256": "88c25375dd9d5ee3f32a8840c53e73921254dae1ff080f662199eea6934ec113"
     }
   ]
 }
