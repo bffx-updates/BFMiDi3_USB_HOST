@@ -1,5 +1,5 @@
 {
-  "version": "4.3",
+  "version": "4.4",
   "files": [
     {
       "path": "bootloader.bin",
@@ -16,8 +16,8 @@
     {
       "path": "app.bin",
       "address": 65536,
-      "size": 926320,
-      "sha256": "d316b2113c406ec84ea496db6670822c9b06e17e0b28017bcb9d8b5f76d23f32"
+      "size": 1001808,
+      "sha256": "729ab8992a86958f46e078e34c7e8b4ccf72ad638e1c1fd419899fef72e70733"
     }
   ]
 }
